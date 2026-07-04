@@ -111,17 +111,36 @@ def merge_existing_company_dirs(output_dir: Path, target_name: str) -> Path:
                     continue
 
                 if dest.exists():
-                    # find a non-conflicting name by appending a counter
-                    stem = dest.stem
-                    suffix = dest.suffix
-                    n = 1
-                    while True:
-                        new_name = f"{stem}_dup{n}{suffix}"
-                        new_dest = target_dir / new_name
-                        if not new_dest.exists():
-                            dest = new_dest
-                            break
-                        n += 1
+                    # If destination exists, keep the newer file and remove the older one
+                    try:
+                        src_mtime = item.stat().st_mtime
+                        dst_mtime = dest.stat().st_mtime
+                        if src_mtime > dst_mtime:
+                            # source is newer: replace destination with source
+                            if dest.is_dir():
+                                shutil.rmtree(dest)
+                            else:
+                                dest.unlink()
+                            shutil.move(str(item), str(dest))
+                        else:
+                            # destination is newer or equal: remove source
+                            if item.is_dir():
+                                shutil.rmtree(item)
+                            else:
+                                item.unlink()
+                        continue
+                    except Exception:
+                        # if anything fails, fall back to renaming to avoid data loss
+                        stem = dest.stem
+                        suffix = dest.suffix
+                        n = 1
+                        while True:
+                            new_name = f"{stem}_dup{n}{suffix}"
+                            new_dest = target_dir / new_name
+                            if not new_dest.exists():
+                                dest = new_dest
+                                break
+                            n += 1
                 try:
                     shutil.move(str(item), str(dest))
                 except Exception:
@@ -177,16 +196,35 @@ def download_financial_statements(symbol: str, output_dir: Path) -> None:
                 for item in child.iterdir():
                     dest = main / item.name
                     if dest.exists():
-                        stem = dest.stem
-                        suffix = dest.suffix
-                        n = 1
-                        while True:
-                            new_name = f"{stem}_dup{n}{suffix}"
-                            new_dest = main / new_name
-                            if not new_dest.exists():
-                                dest = new_dest
-                                break
-                            n += 1
+                        try:
+                            src_mtime = item.stat().st_mtime
+                            dst_mtime = dest.stat().st_mtime
+                            if src_mtime > dst_mtime:
+                                # source newer: replace dest
+                                if dest.is_dir():
+                                    shutil.rmtree(dest)
+                                else:
+                                    dest.unlink()
+                                shutil.move(str(item), str(dest))
+                            else:
+                                # dest newer: remove source
+                                if item.is_dir():
+                                    shutil.rmtree(item)
+                                else:
+                                    item.unlink()
+                            continue
+                        except Exception:
+                            # fallback: rename duplicate
+                            stem = dest.stem
+                            suffix = dest.suffix
+                            n = 1
+                            while True:
+                                new_name = f"{stem}_dup{n}{suffix}"
+                                new_dest = main / new_name
+                                if not new_dest.exists():
+                                    dest = new_dest
+                                    break
+                                n += 1
                     try:
                         shutil.move(str(item), str(dest))
                     except Exception:
@@ -204,6 +242,38 @@ def download_financial_statements(symbol: str, output_dir: Path) -> None:
     # cleanup any previously-created duplicate subfolders
     consolidate_subdirs(base_dir, 'Annual Reports')
     consolidate_subdirs(base_dir, 'Quarterly Reports')
+
+    # remove or normalize files with _dupN suffix: if original exists, keep newer and remove older;
+    # if original doesn't exist, rename dup to original
+    def cleanup_dup_files(target: Path):
+        if not target.exists():
+            return
+        for p in target.rglob('*'):
+            if not p.is_file():
+                continue
+            name = p.name
+            m = re.search(r"(.+)_dup(\d+)(\.[^.]+)?$", name)
+            if not m:
+                continue
+            base_name = m.group(1) + (m.group(3) or '')
+            base_path = p.with_name(base_name)
+            try:
+                if base_path.exists():
+                    # keep newer
+                    if p.stat().st_mtime > base_path.stat().st_mtime:
+                        # dup is newer: replace base
+                        base_path.unlink()
+                        p.rename(base_path)
+                    else:
+                        # base is newer: remove dup
+                        p.unlink()
+                else:
+                    # rename dup to base
+                    p.rename(base_path)
+            except Exception:
+                pass
+
+    cleanup_dup_files(base_dir)
 
     print(f"Downloading financial statements for {ticker_symbol} -> {company_full}")
 
